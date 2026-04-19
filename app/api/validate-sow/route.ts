@@ -2,25 +2,26 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { SOWFormData, AIValidationResult } from "@/lib/types";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-});
-
 export async function POST(request: NextRequest) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "ANTHROPIC_API_KEY is not configured. Add it to your environment variables." },
+      { status: 500 }
+    );
+  }
+
   try {
     const formData: SOWFormData = await request.json();
+
+    const anthropic = new Anthropic({ apiKey });
 
     const prompt = buildValidationPrompt(formData);
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
+      messages: [{ role: "user", content: prompt }],
     });
 
     const responseText =
@@ -29,9 +30,10 @@ export async function POST(request: NextRequest) {
     const result = parseAIResponse(responseText);
     return NextResponse.json(result);
   } catch (error) {
-    console.error("AI validation error:", error);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("AI validation error:", message);
     return NextResponse.json(
-      { error: "Validation service unavailable. Please try again." },
+      { error: `Validation failed: ${message}` },
       { status: 500 }
     );
   }

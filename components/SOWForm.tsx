@@ -111,12 +111,12 @@ export default function SOWForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
       });
-      if (!res.ok) throw new Error("Validation request failed");
-      const result: AIValidationResult = await res.json();
-      setValidationResult(result);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Validation request failed");
+      setValidationResult(data as AIValidationResult);
       setStatus("validated");
-    } catch {
-      setErrorMessage("AI validation failed. Please check your connection and try again.");
+    } catch (e: unknown) {
+      setErrorMessage(e instanceof Error ? e.message : "AI validation failed. Please try again.");
       setStatus("error");
     }
   };
