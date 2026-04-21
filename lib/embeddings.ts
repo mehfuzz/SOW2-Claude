@@ -1,6 +1,12 @@
 const MODEL = "sentence-transformers/all-MiniLM-L6-v2";
-const HF_URL = `https://api-inference.huggingface.co/models/${MODEL}`;
 const BATCH_SIZE = 8;
+
+// HuggingFace exposes the same model under two URL patterns depending on account/plan.
+// We try the pipeline prefix first (more reliable), then fall back to the models path.
+const HF_URLS = [
+  `https://api-inference.huggingface.co/pipeline/feature-extraction/${MODEL}`,
+  `https://api-inference.huggingface.co/models/${MODEL}`,
+];
 
 function cleanText(text: string): string {
   return text.replace(/\n+/g, " ").replace(/\s+/g, " ").trim().slice(0, 512);
@@ -8,37 +14,60 @@ function cleanText(text: string): string {
 
 async function hfPost(inputs: string | string[]): Promise<number[][]> {
   const apiKey = process.env.HUGGINGFACE_API_KEY;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
-  for (let attempt = 0; attempt < 6; attempt++) {
-    const res = await fetch(HF_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ inputs }),
-    });
+  if (!apiKey) {
+    throw new Error(
+      "HUGGINGFACE_API_KEY is not set. Get a free read token at huggingface.co/settings/tokens"
+    );
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
+  };
+
+  // wait_for_model: true tells HuggingFace to wait until the model is loaded
+  // instead of returning a 503 immediately. Avoids the retry-loop entirely.
+  const body = JSON.stringify({
+    inputs,
+    options: { wait_for_model: true },
+  });
+
+  let lastError = "";
+
+  for (const url of HF_URLS) {
+    const res = await fetch(url, { method: "POST", headers, body });
 
     if (res.ok) {
       const data = await res.json();
-      // API returns [[emb]] for single string, [[emb1],[emb2]] for array
+      // Single string → [[emb]]; array of strings → [[emb1], [emb2], ...]
       if (typeof inputs === "string") {
         return Array.isArray(data[0]) ? data : [data];
       }
       return data;
     }
 
-    if (res.status === 503) {
-      // Model loading — wait for estimated_time then retry
-      const body = await res.json().catch(() => ({}));
-      const wait = Math.min((body.estimated_time ?? 20) * 1000, 30_000);
-      await new Promise((r) => setTimeout(r, wait));
-      continue;
+    // Read the actual HuggingFace error message
+    const errBody = await res.json().catch(() => ({}));
+    const detail = errBody.error ?? errBody.message ?? res.statusText;
+    lastError = `HuggingFace ${res.status} (${url.includes("pipeline") ? "pipeline" : "models"} endpoint): ${detail}`;
+
+    // 404 on this URL → try next URL pattern
+    if (res.status === 404) continue;
+
+    // 401/403 → bad token, no point retrying other URLs
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        `HuggingFace auth failed (${res.status}): check your HUGGINGFACE_API_KEY token. ` +
+        "Make sure it is a 'read' token from huggingface.co/settings/tokens"
+      );
     }
 
-    throw new Error(`HuggingFace API ${res.status}: ${res.statusText}`);
+    // Any other error from this URL → break and report
+    break;
   }
 
-  throw new Error("HuggingFace model failed to load after retries");
+  throw new Error(lastError || "HuggingFace request failed on all endpoints");
 }
 
 export async function generateEmbedding(text: string): Promise<number[]> {
@@ -54,7 +83,6 @@ export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
     const batchResult = await hfPost(batch);
     results.push(...batchResult);
 
-    // Throttle between batches to respect rate limits
     if (i + BATCH_SIZE < texts.length) {
       await new Promise((r) => setTimeout(r, 600));
     }
