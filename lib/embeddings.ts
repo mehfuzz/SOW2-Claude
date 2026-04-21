@@ -1,10 +1,14 @@
 const MODEL = "sentence-transformers/all-MiniLM-L6-v2";
 const BATCH_SIZE = 8;
 
-// HuggingFace exposes the same model under two URL patterns depending on account/plan.
-// We try the pipeline prefix first (more reliable), then fall back to the models path.
+// HuggingFace moved to a new router-based API in 2024.
+// We try endpoints in order until one succeeds.
 const HF_URLS = [
+  // New router API (primary, as of 2024-25)
+  `https://router.huggingface.co/hf-inference/models/${MODEL}/v1/feature-extraction`,
+  // Legacy pipeline endpoint (fallback)
   `https://api-inference.huggingface.co/pipeline/feature-extraction/${MODEL}`,
+  // Oldest endpoint (last resort)
   `https://api-inference.huggingface.co/models/${MODEL}`,
 ];
 
@@ -17,7 +21,8 @@ async function hfPost(inputs: string | string[]): Promise<number[][]> {
 
   if (!apiKey) {
     throw new Error(
-      "HUGGINGFACE_API_KEY is not set. Get a free read token at huggingface.co/settings/tokens"
+      "HUGGINGFACE_API_KEY is not set — add it to .env.local or Vercel environment variables. " +
+      "Get a free token at huggingface.co/settings/tokens (Fine-grained token with 'Inference API' permission)."
     );
   }
 
@@ -26,48 +31,56 @@ async function hfPost(inputs: string | string[]): Promise<number[][]> {
     Authorization: `Bearer ${apiKey}`,
   };
 
-  // wait_for_model: true tells HuggingFace to wait until the model is loaded
-  // instead of returning a 503 immediately. Avoids the retry-loop entirely.
-  const body = JSON.stringify({
-    inputs,
-    options: { wait_for_model: true },
-  });
-
-  let lastError = "";
+  const errors: string[] = [];
 
   for (const url of HF_URLS) {
-    const res = await fetch(url, { method: "POST", headers, body });
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        inputs,
+        options: { wait_for_model: true },
+      }),
+    });
 
     if (res.ok) {
       const data = await res.json();
-      // Single string → [[emb]]; array of strings → [[emb1], [emb2], ...]
+      // Normalise to number[][]
+      // Router endpoint returns number[] for single input, number[][] for batch
+      // Legacy endpoints return number[][] for single, number[][][] for batch
       if (typeof inputs === "string") {
-        return Array.isArray(data[0]) ? data : [data];
+        if (typeof data[0] === "number") return [data];          // flat → wrap
+        if (Array.isArray(data[0]) && typeof data[0][0] === "number") return data; // [[emb]]
+        if (Array.isArray(data[0][0])) return [data[0][0]];     // [[[emb]]] → unwrap
+        return [data[0]];
+      } else {
+        if (typeof data[0] === "number") return [data];          // unexpected flat
+        if (Array.isArray(data[0]) && typeof data[0][0] === "number") return data; // [[e1],[e2]]
+        return data.map((d: number[][] | number[]) =>
+          Array.isArray(d[0]) ? (d as number[][])[0] : (d as number[])
+        );
       }
-      return data;
     }
 
-    // Read the actual HuggingFace error message
-    const errBody = await res.json().catch(() => ({}));
-    const detail = errBody.error ?? errBody.message ?? res.statusText;
-    lastError = `HuggingFace ${res.status} (${url.includes("pipeline") ? "pipeline" : "models"} endpoint): ${detail}`;
-
-    // 404 on this URL → try next URL pattern
-    if (res.status === 404) continue;
-
-    // 401/403 → bad token, no point retrying other URLs
+    // Auth errors — stop immediately, no point trying other URLs
     if (res.status === 401 || res.status === 403) {
+      const body = await res.json().catch(() => ({}));
       throw new Error(
-        `HuggingFace auth failed (${res.status}): check your HUGGINGFACE_API_KEY token. ` +
-        "Make sure it is a 'read' token from huggingface.co/settings/tokens"
+        `HuggingFace auth failed (${res.status}): ${body.error ?? res.statusText}. ` +
+        "Create a Fine-grained token at huggingface.co/settings/tokens with " +
+        "'Make calls to the serverless Inference API' permission enabled."
       );
     }
 
-    // Any other error from this URL → break and report
-    break;
+    const body = await res.json().catch(() => ({}));
+    errors.push(`[${url.includes("router") ? "router" : url.includes("pipeline") ? "pipeline" : "legacy"}] ${res.status}: ${body.error ?? res.statusText}`);
+
+    // 404 → try next URL pattern; anything else → report and try next
   }
 
-  throw new Error(lastError || "HuggingFace request failed on all endpoints");
+  throw new Error(
+    `HuggingFace embedding failed on all endpoints:\n${errors.join("\n")}`
+  );
 }
 
 export async function generateEmbedding(text: string): Promise<number[]> {
