@@ -1,104 +1,73 @@
-const MODEL = "sentence-transformers/all-MiniLM-L6-v2";
-const BATCH_SIZE = 8;
+// Cohere embed-english-light-v3.0 — 384 dims, free trial, no credit card
+// Get a free key at: dashboard.cohere.com → API Keys → "New Trial Key"
 
-// HuggingFace moved to a new router-based API in 2024.
-// We try endpoints in order until one succeeds.
-const HF_URLS = [
-  // New router API (primary, as of 2024-25)
-  `https://router.huggingface.co/hf-inference/models/${MODEL}/v1/feature-extraction`,
-  // Legacy pipeline endpoint (fallback)
-  `https://api-inference.huggingface.co/pipeline/feature-extraction/${MODEL}`,
-  // Oldest endpoint (last resort)
-  `https://api-inference.huggingface.co/models/${MODEL}`,
-];
+const COHERE_URL = "https://api.cohere.com/v2/embed";
+const COHERE_MODEL = "embed-english-light-v3.0";
+const BATCH_SIZE = 96; // Cohere accepts up to 96 texts per request
 
 function cleanText(text: string): string {
   return text.replace(/\n+/g, " ").replace(/\s+/g, " ").trim().slice(0, 512);
 }
 
-async function hfPost(inputs: string | string[]): Promise<number[][]> {
-  const apiKey = process.env.HUGGINGFACE_API_KEY;
+async function cohereEmbed(
+  texts: string[],
+  inputType: "search_document" | "search_query"
+): Promise<number[][]> {
+  const apiKey = process.env.COHERE_API_KEY;
 
   if (!apiKey) {
     throw new Error(
-      "HUGGINGFACE_API_KEY is not set — add it to .env.local or Vercel environment variables. " +
-      "Get a free token at huggingface.co/settings/tokens (Fine-grained token with 'Inference API' permission)."
+      "COHERE_API_KEY is not set. " +
+      "Get a free key (no credit card) at dashboard.cohere.com → API Keys → New Trial Key. " +
+      "Add it as COHERE_API_KEY in .env.local or your Vercel environment variables."
     );
   }
 
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKey}`,
-  };
+  const res = await fetch(COHERE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "X-Client-Name": "airtel-icertis-rag",
+    },
+    body: JSON.stringify({
+      texts,
+      model: COHERE_MODEL,
+      input_type: inputType,
+      embedding_types: ["float"],
+    }),
+  });
 
-  const errors: string[] = [];
-
-  for (const url of HF_URLS) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        inputs,
-        options: { wait_for_model: true },
-      }),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      // Normalise to number[][]
-      // Router endpoint returns number[] for single input, number[][] for batch
-      // Legacy endpoints return number[][] for single, number[][][] for batch
-      if (typeof inputs === "string") {
-        if (typeof data[0] === "number") return [data];          // flat → wrap
-        if (Array.isArray(data[0]) && typeof data[0][0] === "number") return data; // [[emb]]
-        if (Array.isArray(data[0][0])) return [data[0][0]];     // [[[emb]]] → unwrap
-        return [data[0]];
-      } else {
-        if (typeof data[0] === "number") return [data];          // unexpected flat
-        if (Array.isArray(data[0]) && typeof data[0][0] === "number") return data; // [[e1],[e2]]
-        return data.map((d: number[][] | number[]) =>
-          Array.isArray(d[0]) ? (d as number[][])[0] : (d as number[])
-        );
-      }
-    }
-
-    // Auth errors — stop immediately, no point trying other URLs
-    if (res.status === 401 || res.status === 403) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(
-        `HuggingFace auth failed (${res.status}): ${body.error ?? res.statusText}. ` +
-        "Create a Fine-grained token at huggingface.co/settings/tokens with " +
-        "'Make calls to the serverless Inference API' permission enabled."
-      );
-    }
-
+  if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    errors.push(`[${url.includes("router") ? "router" : url.includes("pipeline") ? "pipeline" : "legacy"}] ${res.status}: ${body.error ?? res.statusText}`);
-
-    // 404 → try next URL pattern; anything else → report and try next
+    const detail = body.message ?? body.error ?? res.statusText;
+    throw new Error(`Cohere API ${res.status}: ${detail}`);
   }
 
-  throw new Error(
-    `HuggingFace embedding failed on all endpoints:\n${errors.join("\n")}`
-  );
+  const data = await res.json();
+  return data.embeddings.float as number[][];
 }
 
-export async function generateEmbedding(text: string): Promise<number[]> {
-  const result = await hfPost(cleanText(text));
-  return result[0];
+// Use "search_query" when embedding a user's chat message
+export async function generateEmbedding(
+  text: string,
+  inputType: "search_query" | "search_document" = "search_query"
+): Promise<number[]> {
+  const results = await cohereEmbed([cleanText(text)], inputType);
+  return results[0];
 }
 
-export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
+// Use "search_document" when embedding knowledge-base chunks
+export async function generateEmbeddings(
+  texts: string[],
+  inputType: "search_query" | "search_document" = "search_document"
+): Promise<number[][]> {
   const results: number[][] = [];
 
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE).map(cleanText);
-    const batchResult = await hfPost(batch);
+    const batchResult = await cohereEmbed(batch, inputType);
     results.push(...batchResult);
-
-    if (i + BATCH_SIZE < texts.length) {
-      await new Promise((r) => setTimeout(r, 600));
-    }
   }
 
   return results;

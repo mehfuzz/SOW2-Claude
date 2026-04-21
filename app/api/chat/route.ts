@@ -29,8 +29,8 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = supabaseAdmin();
 
-    // Embed the query
-    const queryEmbedding = await generateEmbedding(message);
+    // Embed the query — use "search_query" type for retrieval
+    const queryEmbedding = await generateEmbedding(message, "search_query");
 
     // Retrieve relevant chunks from knowledge base
     const { data: chunks } = await supabase.rpc("match_chunks", {
