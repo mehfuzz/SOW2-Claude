@@ -29,15 +29,25 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = supabaseAdmin();
 
-    // Embed the query
-    const queryEmbedding = await generateEmbedding(message);
+    // Embed the query — use "search_query" type for retrieval
+    const queryEmbedding = await generateEmbedding(message, "search_query");
 
     // Retrieve relevant chunks from knowledge base
-    const { data: chunks } = await supabase.rpc("match_chunks", {
+    // threshold 0.0 = always return top-k; Cohere scores typically 0.3–0.9 for matches
+    const { data: chunks, error: searchError } = await supabase.rpc("match_chunks", {
       query_embedding: queryEmbedding,
       match_count: 5,
-      similarity_threshold: 0.25,
+      similarity_threshold: 0.0,
     });
+
+    if (searchError) {
+      // Surface setup problems clearly (e.g. match_chunks function not created yet)
+      console.error("[chat] match_chunks RPC error:", searchError);
+      throw new Error(
+        `Knowledge base search failed: ${searchError.message}. ` +
+        "Make sure you have run supabase/rag-schema.sql in your Supabase SQL editor."
+      );
+    }
 
     // Deduplicate source document names
     const sources: string[] = [

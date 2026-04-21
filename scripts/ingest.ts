@@ -2,9 +2,13 @@
  * Ingest documents from knowledge-base/ into Supabase pgvector.
  *
  * Usage:
- *   npm run ingest                      — ingest new files only
- *   npm run ingest -- --force           — re-ingest all files
+ *   npm run ingest                      — ingest new files only (skip already-indexed)
+ *   npm run ingest -- --force           — delete all existing + re-ingest everything
  *   npm run ingest -- --file=guide.pdf  — re-ingest one specific file
+ *   npm run ingest -- --clear           — delete ALL existing embeddings (no re-ingest)
+ *
+ * Run --clear then npm run ingest when switching embedding providers
+ * (e.g. after the switch from HuggingFace to Cohere).
  */
 
 import { config } from "dotenv";
@@ -33,18 +37,27 @@ const MIME: Record<string, string> = {
 function parseArgs() {
   const args = process.argv.slice(2);
   const force = args.includes("--force");
+  const clear = args.includes("--clear");
   const fileArg = args.find((a) => a.startsWith("--file="));
   const targetFile = fileArg ? fileArg.replace("--file=", "") : null;
-  return { force, targetFile };
+  return { force, clear, targetFile };
 }
 
 async function main() {
-  const { force, targetFile } = parseArgs();
+  const { force, clear, targetFile } = parseArgs();
 
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
+
+  // --clear: wipe all embeddings and exit (run before switching embedding providers)
+  if (clear) {
+    console.log("Clearing all knowledge base embeddings from Supabase...");
+    await supabase.from("rag_documents").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    console.log("Done. Run `npm run ingest` to re-index your documents.");
+    return;
+  }
 
   // List files in knowledge-base/
   const allFiles = fs
