@@ -1,3 +1,13 @@
+// For use in Node.js scripts (Buffer + filename string)
+export async function parseDocumentBuffer(buffer: Buffer, fileName: string): Promise<string> {
+  const name = fileName.toLowerCase();
+  if (name.endsWith(".pdf"))  return parsePdf(buffer);
+  if (name.endsWith(".docx")) return parseDocx(buffer);
+  if (name.endsWith(".txt") || name.endsWith(".md")) return buffer.toString("utf-8");
+  throw new Error(`Unsupported file type: ${fileName}`);
+}
+
+// For use in Next.js API routes (Web File object)
 export async function parseDocument(file: File): Promise<string> {
   const name = file.name.toLowerCase();
   const buffer = Buffer.from(await file.arrayBuffer());
