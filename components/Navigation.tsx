@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const links = [
   { href: "/", label: "SOW Form", icon: "📄" },
   { href: "/chat", label: "AI Chat", icon: "💬" },
+  { href: "/upload", label: "Knowledge Base", icon: "📚" },
 ];
 
 export default function Navigation() {
