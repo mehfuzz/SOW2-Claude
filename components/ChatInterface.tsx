@@ -72,7 +72,11 @@ export default function ChatInterface() {
           body: JSON.stringify({ message: trimmed, history }),
         });
 
-        if (!res.ok || !res.body) throw new Error("Request failed");
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Server error ${res.status}`);
+        }
+        if (!res.body) throw new Error("No response body");
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -112,13 +116,13 @@ export default function ChatInterface() {
             { ...placeholder, content: snap, sources: srcSnap },
           ]);
         }
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
         setMessages((prev) => [
           ...prev.slice(0, -1),
           {
             role: "assistant",
-            content:
-              "Sorry, I encountered an error. Please try again or contact IT support if the issue persists.",
+            content: `⚠️ Error: ${msg}`,
             timestamp: new Date(),
           },
         ]);
