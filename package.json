@@ -11,12 +11,16 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.37.0",
     "@supabase/supabase-js": "^2.49.4",
+    "groq-sdk": "^0.9.1",
+    "mammoth": "^1.8.0",
     "next": "^15.3.0",
+    "pdf-parse": "^1.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@types/node": "^22",
+    "@types/pdf-parse": "^1.1.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.4.21",
